@@ -1,0 +1,13 @@
+# Local overrides — may contain secrets; never commit
+assets/sample-config
+assets/*.local
+
+# Populated config — committed copy is placeholders only.
+# If you populate config.template locally, do NOT commit it.
+# (No ignore line for config.template itself, since the placeholder version
+# IS committed. Discipline only — `git diff` before committing.)
+
+# Build cruft
+*.swp
+*.bak
+.DS_Store

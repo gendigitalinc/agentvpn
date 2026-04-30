@@ -1,0 +1,30 @@
+# Norton VPN Client Configuration  (nvpn-client 0.9.x)
+#
+# This file is sourced by `nvpn-client --env-file=<path>`. Plain shell
+# assignments (no `export`).
+#
+# DO NOT commit a populated copy of this file. The real UDID is issued by the
+# Norton/Elysium provisioning flow — pull it from your secrets store.
+#
+# Defaults compiled into nvpn-client:
+#   VPN_SERVICE_BASE_URL=https://api.se-platform.com
+#   ELYSIUM_AUTH_CLIENT_NAME=sprinkler
+
+# Device Identification (required) — issued by Agent VPN, format:
+#   U1.<uuid>.<region>.<64-hex-token>
+# This UDID alone is sufficient for auth in 0.9.x; ELYSIUM_AUTH_CLIENT_KEY
+# is no longer required (and including a stale/placeholder value will cause
+# Elysium to return 401).
+UDID=REPLACE_WITH_DEVICE_UDID
+
+# Optional: legacy client key auth (no longer required as of 0.9.x).
+# Leave commented out unless your provisioning flow specifically needs it.
+#ELYSIUM_AUTH_CLIENT_KEY=
+
+# Optional overrides (defaults shown):
+#ELYSIUM_AUTH_CLIENT_NAME=sprinkler
+#VPN_SERVICE_BASE_URL=https://api.se-platform.com
+
+# Optional: Certificate Pinning (comma-separated SHA-256 fingerprints)
+#ELYSIUM_CERT_PINS=fingerprint1,fingerprint2
+#DISCOVERY_CERT_PINS=fingerprint1,fingerprint2

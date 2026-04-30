@@ -1,0 +1,43 @@
+# Safe template for optional bind-mount workflows with the new nvpn-client 0.9.x.
+#
+# Two valid workflows:
+#
+# 1) READ-WRITE bind mount + -e overrides (recommended for development):
+#       cp sample-config.example sample-config
+#       # leave UDID as the placeholder — docker-entrypoint.sh patches it at
+#       # startup from -e UDID=...
+#       docker run ... \
+#         -v "$PWD/assets/sample-config:/etc/nvpn-client/config" \
+#         -e UDID="$AGENTVPN_UDID" \
+#         agentvpn daemon
+#    The entrypoint will write UDID into the mounted file and strip any
+#    leftover REPLACE_WITH_* placeholders before starting nvpn-client.
+#
+# 2) READ-ONLY bind mount with everything pre-filled (for locked-down envs):
+#       cp sample-config.example sample-config
+#       sed -i "s|REPLACE_WITH_DEVICE_UDID|$AGENTVPN_UDID|" sample-config
+#       docker run ... \
+#         -v "$PWD/assets/sample-config:/etc/nvpn-client/config:ro" \
+#         agentvpn daemon
+#    With :ro the entrypoint detects the read-only file and skips its
+#    env-var patch step entirely (so any -e UDID=... would be IGNORED). The
+#    mounted file must therefore contain the final UDID and any other values
+#    you need; placeholders will reach Elysium and produce a 401.
+#
+# 3) Or skip the file workflow altogether and pass everything via -e flags;
+#    the in-image config.template (placeholders only) will be used.
+
+# Required: Agent VPN device UDID (sufficient for auth in 0.9.x).
+UDID=REPLACE_WITH_DEVICE_UDID
+
+# Optional overrides:
+#ELYSIUM_AUTH_CLIENT_NAME=sprinkler
+#VPN_SERVICE_BASE_URL=https://api.se-platform.com
+
+# Optional cert pinning:
+#ELYSIUM_CERT_PINS=fp1,fp2
+#DISCOVERY_CERT_PINS=fp1,fp2
+
+# Optional legacy client key (no longer required as of 0.9.x — leave unset
+# unless your provisioning specifically issues one):
+#ELYSIUM_AUTH_CLIENT_KEY=
