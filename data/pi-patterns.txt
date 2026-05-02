@@ -1,0 +1,60 @@
+# Prompt Injection Heuristic Patterns
+#
+# One extended regex per line. Blank lines and lines starting with # are
+# ignored. Matched case-insensitively against fetched content via:
+#   grep -E -i -f <this-file>
+#
+# Categories:
+#   [IO] Instruction override — attempts to replace/discard the agent’s instructions
+#   [RA] Role assumption     — jailbreak personas, “act as” directives
+#   [SB] Safety bypass      — requests to disable guardrails or ignore safety
+#   [SP] System prompt extraction — attempts to leak the system prompt
+#   [EE] Encoding evasion    — obfuscated injection attempts
+#
+# Sourced from public PI research (OWASP LLM Top 10, academic adversarial
+# prompt datasets, known CTF/red-team strings). Update as new patterns emerge.
+
+# --- [IO] Instruction override ---
+ignore (all |any )?(previous|prior|above|preceding|earlier) (instructions?|prompts?|rules?|context|directions?)
+disregard (all |any )?(previous|prior|above|preceding|earlier) (instructions?|prompts?|rules?|context|directions?)
+forget (all |any )?(previous|prior|above|preceding|earlier) (instructions?|prompts?|rules?|context|directions?)
+override (all |any )?(previous|prior|above) (instructions?|prompts?|rules?|context)
+(new|updated|revised|replacement) (instructions?|system prompt):?\s
+from now on,? (you are|you will|you must|your)
+start(ing)? (from )?now,? (you are|you will|you must|your)
+do not follow (any )?(previous|prior|original|the above) (instructions?|rules?)
+(the )?instructions? (above|before) (are|were|have been) (wrong|incorrect|outdated|superseded)
+\bBEGIN NEW INSTRUCTIONS\b
+\bEND OF SYSTEM PROMPT\b
+\bSYSTEM PROMPT OVERRIDE\b
+\byou are now in (developer|maintenance|debug|test|unrestricted) mode\b
+
+# --- [RA] Role assumption ---
+\b(you are|act as|behave as|pretend to be|roleplay as|simulate being|play the role of) (a |an )?(evil|malicious|unfiltered|unrestricted|jailbroken|uncensored)\b
+\b(you are|act as|behave as|pretend to be|roleplay as) DAN\b
+\bdo anything now\b
+\bjailbreak(ed)?\b
+\b(enable|activate|enter|switch to) (unrestricted|uncensored|unfiltered|developer|god) mode\b
+\byou have no (restrictions|limitations|rules|guidelines|boundaries)\b
+\byou can (now )?do anything\b
+\byou are (not |no longer )?(bound|limited|restricted|constrained) by\b
+\banti[- ]?content[- ]?policy\b
+
+# --- [SB] Safety bypass ---
+\b(ignore|bypass|disable|turn off|deactivate|skip|remove) (your |the |all )?(safety|content|ethical|security) (filter|guardrail|guideline|restriction|rule|policy|check)\b
+\b(ignore|bypass|disable|turn off|deactivate|skip|remove) (your |the |all )?(moderation|alignment|censorship)\b
+\bfor (educational|research|academic|testing|security) purposes? only\b.{0,40}\b(ignore|bypass|disable|override)\b
+\bthis is (just )?(a |an )?(test|hypothetical|thought experiment)\b.{0,40}\b(ignore|bypass|disable|override)\b
+\bpretend (that )?(there are|you have) no (restrictions|rules|guidelines|filters)\b
+\brespond without (any )?(restrictions|filters|limitations|censorship|safety)\b
+
+# --- [SP] System prompt extraction ---
+\b(print|show|display|reveal|output|repeat|echo|recite|tell) (me )?(your |the )?(full |complete |entire |exact )?(system ?prompt|instructions?|initial prompt|pre[- ]?prompt|hidden prompt|base prompt|meta[- ]?prompt|original prompt)\b
+\bwhat (are|is|were) your (system |original |initial |hidden |base )?(instructions?|prompt|rules?|guidelines?|directives?)\b
+\brepeat (everything|the text) (above|before|from the (start|beginning))\b
+\b(copy|paste|dump|leak|extract|exfiltrate) (your |the )?(system ?prompt|instructions?|context)\b
+
+# --- [EE] Encoding evasion ---
+\baWdub3JlIGFsbCBwcmV2aW91\b
+\bZm9yZ2V0IGFsbCBwcmV2aW91\b
+\bRGlzcmVnYXJk\b

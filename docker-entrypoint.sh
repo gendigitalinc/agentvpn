@@ -34,6 +34,7 @@ mkdir -p "$LOG_DIR" "$CONFIG_DIR" /etc/wireguard
 
 cleanup() {
     echo "[entrypoint] Shutting down — stopping SOCKS5 proxy and tearing down wg0..."
+    teardown_firewall
     pkill -x microsocks 2>/dev/null || true
     wg-quick down wg0 2>/dev/null || true
     rm -f "$TUNNEL_UP_FLAG" 2>/dev/null || true
@@ -97,6 +98,57 @@ fi
 LOCATION_FORMAT="${VPN_LOCATION_FORMAT:-$LOCATION_FORMAT}"
 
 # ---- Helpers --------------------------------------------------------------
+setup_firewall() {
+    # Kill switch: block all egress that doesn't go through the WireGuard
+    # tunnel or to the tunnel endpoint itself. If wg0 goes down, traffic is
+    # blocked entirely — no fallback to the container's default route (Docker
+    # bridge → host network). Also enforces DNS-over-tunnel: only the tunnel's
+    # DNS server is reachable on port 53.
+    #
+    # Called after every successful `wg-quick up wg0`. Safe to call repeatedly
+    # (flushes first).
+
+    local ep_addr ep_ip ep_port tunnel_dns
+
+    ep_addr=$(wg show wg0 endpoints 2>/dev/null | awk '{print $2}' | head -1)
+    ep_ip=$(echo "$ep_addr" | cut -d: -f1)
+    ep_port=$(echo "$ep_addr" | rev | cut -d: -f1 | rev)
+    tunnel_dns=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)
+
+    if [ -z "$ep_ip" ]; then
+        echo "[firewall] WARNING: could not determine WireGuard endpoint; kill switch NOT active"
+        return 0
+    fi
+
+    # Flush any previous rules from a prior connect cycle
+    iptables -F OUTPUT 2>/dev/null || true
+    iptables -P OUTPUT DROP
+
+    # Loopback — always allowed
+    iptables -A OUTPUT -o lo -j ACCEPT
+
+    # WireGuard endpoint — UDP encapsulation must reach the real server
+    iptables -A OUTPUT -p udp -d "$ep_ip" --dport "${ep_port:-51820}" -j ACCEPT
+
+    # DNS — only to the tunnel's DNS server (prevents DNS leaks via hardcoded resolvers)
+    if [ -n "$tunnel_dns" ]; then
+        iptables -A OUTPUT -p udp --dport 53 -d "$tunnel_dns" -j ACCEPT
+        iptables -A OUTPUT -p tcp --dport 53 -d "$tunnel_dns" -j ACCEPT
+        iptables -A OUTPUT -p udp --dport 53 -j DROP
+        iptables -A OUTPUT -p tcp --dport 53 -j DROP
+    fi
+
+    # Everything through the tunnel — allowed
+    iptables -A OUTPUT -o wg0 -j ACCEPT
+
+    echo "[firewall] Kill switch active: ep=${ep_ip}:${ep_port:-51820} dns=${tunnel_dns:-none}"
+}
+
+teardown_firewall() {
+    iptables -F OUTPUT 2>/dev/null || true
+    iptables -P OUTPUT ACCEPT 2>/dev/null || true
+}
+
 ensure_socks5() {
     # !!! INVARIANT — DO NOT BREAK !!!
     # Only call AFTER `wg-quick up wg0` has succeeded. microsocks listens on
@@ -149,12 +201,36 @@ connect_once() {
     wg_dns=$(grep -oP '^DNS\s*=\s*\K.*' "$WG_CONF" | tr -d ' ' | head -1 || true)
     sed -i '/^DNS\s*=/d' "$WG_CONF"
 
+    # Capture the default gateway BEFORE wg-quick adds policy routing, so we
+    # can create an explicit host route for the WireGuard endpoint below.
+    local default_gw default_dev
+    default_gw=$(ip route show default | awk '/default/ {print $3; exit}')
+    default_dev=$(ip route show default | awk '/default/ {print $5; exit}')
+
     echo "[entrypoint] Bringing up wg0..."
     if ! wg-quick up wg0; then
         echo "[entrypoint] wg-quick up wg0 failed"
         return 1
     fi
     echo "[entrypoint] Tunnel is UP"
+
+    # Workaround: wg-quick's fwmark-based policy routing (table 51820, mark
+    # 0xca6c) relies on the kernel honouring the fwmark on WireGuard's own
+    # UDP encapsulation packets. Some VM kernels (notably Rancher Desktop's
+    # 6.6.x-virt) don't apply the fwmark correctly, causing the endpoint's
+    # UDP traffic to loop back through wg0 instead of exiting via eth0.
+    # Adding an explicit /32 host route for the endpoint through the
+    # original default gateway is a safe, idempotent fix that works on all
+    # kernels — if fwmark works, the explicit route is harmless (fwmark
+    # matches first); if fwmark is broken, the host route saves the tunnel.
+    if [ -n "$default_gw" ] && [ -n "$default_dev" ]; then
+        local ep_ip
+        ep_ip=$(wg show wg0 endpoints 2>/dev/null | awk '{print $2}' | cut -d: -f1 | head -1)
+        if [ -n "$ep_ip" ]; then
+            ip route add "$ep_ip/32" via "$default_gw" dev "$default_dev" 2>/dev/null || true
+            echo "[entrypoint] Pinned endpoint $ep_ip via $default_gw dev $default_dev"
+        fi
+    fi
 
     if [ -n "$wg_dns" ]; then
         # Comma-separated list possible — take the first
@@ -164,6 +240,7 @@ connect_once() {
         echo "[entrypoint] DNS set to $first_dns"
     fi
 
+    setup_firewall
     ensure_socks5
 
     # Mark tunnel as up only after every prerequisite succeeded. Recipes /
@@ -236,6 +313,7 @@ case "${1:-daemon}" in
             fi
             rm -f "$TUNNEL_UP_FLAG" 2>/dev/null || true
             echo "[entrypoint] Tunnel down, reconnecting in ${backoff}s..."
+            teardown_firewall
             wg-quick down wg0 2>/dev/null || true
             sleep "$backoff" &
             wait $! || true
@@ -251,6 +329,64 @@ case "${1:-daemon}" in
         done
         ;;
 
+    safefetch)
+        # Fetch a URL through the VPN with prompt injection scanning.
+        # Usage: docker exec <name> safefetch <url> [curl-options...]
+        # Exit codes: 0 = clean, 77 = PI detected, 1 = fetch error
+        SAFEFETCH_TIMEOUT="${SAFEFETCH_TIMEOUT:-30}"
+        SAFEFETCH_LOG="/var/log/safefetch.log"
+        url="${2:-}"
+        if [ -z "$url" ]; then
+            echo "Usage: safefetch <url> [curl-options...]" >&2
+            exit 1
+        fi
+        shift 2  # drop "safefetch" and url, leaving extra curl args
+
+        fetch_output=$(curl -s -m "$SAFEFETCH_TIMEOUT" \
+            -A "Mozilla/5.0 (compatible; agentvpn safefetch)" \
+            "$@" "$url" 2>/dev/null)
+        fetch_rc=$?
+        if [ "$fetch_rc" -ne 0 ]; then
+            ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            echo "${ts} ${url} fetch_error 0 error" >> "$SAFEFETCH_LOG" 2>/dev/null || true
+            echo "[safefetch] curl failed (exit $fetch_rc)" >&2
+            exit 1
+        fi
+
+        content_len=${#fetch_output}
+        scan_stderr=$(mktemp)
+        printf '%s' "$fetch_output" | /usr/local/bin/pi-scan.sh 2>"$scan_stderr"
+        scan_rc=$?
+        ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+        if [ "$scan_rc" -eq 77 ]; then
+            echo "${ts} ${url} 200 ${content_len} blocked" >> "$SAFEFETCH_LOG" 2>/dev/null || true
+            cat "$scan_stderr" >&2
+            rm -f "$scan_stderr"
+            exit 77
+        fi
+
+        echo "${ts} ${url} 200 ${content_len} clean" >> "$SAFEFETCH_LOG" 2>/dev/null || true
+        rm -f "$scan_stderr"
+        exit 0
+        ;;
+
+    auditlog)
+        # Dump or tail the safefetch audit log.
+        # Usage: docker exec <name> auditlog [tail-args...]
+        SAFEFETCH_LOG="/var/log/safefetch.log"
+        if [ ! -f "$SAFEFETCH_LOG" ]; then
+            echo "No safefetch audit log yet." >&2
+            exit 0
+        fi
+        if [ $# -gt 1 ]; then
+            shift  # drop "auditlog"
+            tail "$@" "$SAFEFETCH_LOG"
+        else
+            cat "$SAFEFETCH_LOG"
+        fi
+        ;;
+
     status)
         echo "WireGuard status:"
         wg show wg0 || echo "wg0 interface not up"
@@ -264,11 +400,13 @@ case "${1:-daemon}" in
         ;;
 
     *)
-        echo "Usage: $0 {daemon|connect|locations|status|stop}"
+        echo "Usage: $0 {daemon|connect|locations|status|safefetch|auditlog|stop}"
         echo ""
         echo "  daemon     persistent mode with health checks + reconnect (default)"
         echo "  connect    one-shot connect, print egress IP, exit"
         echo "  locations  list available VPN locations (passes extra args to nvpn-client)"
+        echo "  safefetch  fetch URL through VPN with PI scanning (extra args passed to curl)"
+        echo "  auditlog   dump safefetch audit log (extra args passed to tail)"
         echo "  status     show wg0 + recent client logs"
         echo "  stop       tear down tunnel cleanly"
         echo ""
@@ -284,6 +422,7 @@ case "${1:-daemon}" in
         echo "  RECONNECT_BACKOFF_INITIAL     seconds (default 10)"
         echo "  RECONNECT_BACKOFF_MAX         seconds (default 300)"
         echo "  MAX_INITIAL_CONNECT_ATTEMPTS  fail-fast cap on first-time connect (default 10)"
+        echo "  SAFEFETCH_TIMEOUT             curl timeout for safefetch in seconds (default 30)"
         exit 1
         ;;
 esac

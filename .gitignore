@@ -11,3 +11,9 @@ assets/*.local
 *.swp
 *.bak
 .DS_Store
+
+# Rust build artifacts
+tools/pi-ml-scan/target/
+
+# ML model assets are committed directly (~23 MB total).
+# If the model is ever replaced, update the files in tools/pi-ml-scan/assets/.
