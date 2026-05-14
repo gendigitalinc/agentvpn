@@ -51,6 +51,14 @@ RUN apk add --no-cache build-base git \
     && make -C /src/microsocks \
     && install -m755 /src/microsocks/microsocks /microsocks
 
+# --- pi-ml-scan (Rust + tract-onnx ML scanner) ------------------------------
+FROM rust:1.87-alpine AS pi-ml-scan-builder
+RUN apk add --no-cache musl-dev
+COPY tools/pi-ml-scan/ /src/pi-ml-scan/
+WORKDIR /src/pi-ml-scan
+RUN cargo build --release \
+    && install -m755 target/release/pi-ml-scan /pi-ml-scan
+
 # --- nvpn-client unpack ----------------------------------------------------
 # Extract the deb's payload into a clean rootfs that we can COPY in one shot.
 FROM alpine:3.21 AS nvpn-unpack
@@ -87,6 +95,7 @@ RUN apk add --no-cache \
 
 COPY --from=wireguard-go-builder /wireguard-go /usr/bin/wireguard-go
 COPY --from=microsocks-builder /microsocks /usr/bin/microsocks
+COPY --from=pi-ml-scan-builder /pi-ml-scan /usr/local/bin/pi-ml-scan
 
 # Drop in the deb payload (binaries + systemd unit, skipping the postinst).
 COPY --from=nvpn-unpack /out/usr/bin/nvpn-client            /usr/bin/nvpn-client
@@ -102,6 +111,11 @@ RUN mv /sbin/sysctl /sbin/sysctl.real \
 
 COPY config.template /etc/nvpn-client/config.template
 RUN install -m600 /etc/nvpn-client/config.template /etc/nvpn-client/config
+
+# Prompt injection heuristic scanner (used by safefetch entrypoint command)
+COPY data/pi-patterns.txt /usr/local/share/pi-patterns.txt
+COPY scripts/pi-scan.sh /usr/local/bin/pi-scan.sh
+RUN chmod +x /usr/local/bin/pi-scan.sh
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

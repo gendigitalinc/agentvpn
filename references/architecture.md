@@ -11,6 +11,8 @@
 - **`/usr/bin/wireguard-go`** — Userspace WireGuard implementation (built from `git.zx2c4.com/wireguard-go`). Required because the kernel WireGuard module isn't available in the container. `wg-quick` auto-detects it.
 - **`/usr/bin/microsocks`** — Tiny SOCKS5 proxy (built from `github.com/rofl0r/microsocks`), launched on `0.0.0.0:1080` *inside* the container by the entrypoint, **after** `wg-quick up wg0` succeeds.
 - **`/usr/local/bin/docker-entrypoint.sh`** — Owns container lifecycle: env→config patching, `nvpn-client --connect`, `wg-quick up`, DNS fixup, microsocks launch, health-check + reconnect loop, signal-trap teardown.
+- **`/usr/local/bin/pi-scan.sh`** — Two-tier prompt injection scanner invoked by the `safefetch` entrypoint command. Tier 1: heuristic regex matching against `/usr/local/share/pi-patterns.txt`. Tier 2: ML inference via `pi-ml-scan`.
+- **`/usr/local/bin/pi-ml-scan`** — Static Rust binary embedding a BERT-based PI model (6 layers, hidden=384, 12 heads, INT8 ONNX, ~22 MB). Built with `tract-onnx` (pure Rust, no C dependencies). Uses 512-token sliding-window chunking with 128-token overlap for long content. Classifies text as safe/injection via softmax over 2-class logits; block threshold 0.99. Invoked by `pi-scan.sh` when heuristic scan passes.
 - **WireGuard interface**: `wg0` (single interface per container).
 
 The Norton-shipped `/lib/systemd/system/nvpn-client.service` and `/usr/bin/nvpn-client-daemon` are present in the image but unused — the container manages its own lifecycle, and a 1-line bash sleep loop is not enough (it never brings up `wg0`).
@@ -36,6 +38,8 @@ The Norton-shipped `/lib/systemd/system/nvpn-client.service` and `/usr/bin/nvpn-
 | `RECONNECT_BACKOFF_INITIAL` | `10` (seconds) | base for exponential backoff between reconnect attempts |
 | `RECONNECT_BACKOFF_MAX` | `300` (seconds) | cap on the backoff |
 | `MAX_INITIAL_CONNECT_ATTEMPTS` | `10` | fail-fast cap. After this many consecutive failed first-time connects, the entrypoint exits non-zero so the container shows `Exited(1)` instead of silently retrying forever. Once at least one connect has succeeded, the steady-state loop retries indefinitely. |
+| `SAFEFETCH_TIMEOUT` | `30` (seconds) | curl timeout for `safefetch` command |
+| `PI_ML_ENABLED` | `1` | set to `0` to skip ML tier in PI scanning (heuristic-only mode) |
 
 ## Auth + Tunnel Flow
 

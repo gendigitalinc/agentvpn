@@ -9,3 +9,7 @@ assets/sample-config
 assets/*.local
 # Don't ship the arm64 deb in build context — only amd64 is consumed.
 data/debs/*_arm64.deb
+# Tests are host-side only
+tests/
+# Rust build artifacts (rebuild inside Docker)
+tools/pi-ml-scan/target/
